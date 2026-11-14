@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const STORAGE_KEY = 'smartbin-bins-v1';
 
@@ -7,6 +7,21 @@ const initialBins = [
   { id: 2, name: 'Parkiran Area', type: 'Plastik', current_weight: 0, max_capacity: 5000, total_points: 0 },
   { id: 3, name: 'Cafetaria', type: 'Kertas', current_weight: 0, max_capacity: 5000, total_points: 0 },
 ];
+
+const recyclableClasses = {
+  apple: 'Organik',
+  banana: 'Organik',
+  broccoli: 'Organik',
+  cake: 'Organik',
+  carrot: 'Organik',
+  donut: 'Organik',
+  orange: 'Organik',
+  pizza: 'Organik',
+  sandwich: 'Organik',
+  'hot dog': 'Organik',
+  bottle: 'Plastik',
+  book: 'Kertas',
+};
 
 function loadBins() {
   try {
@@ -31,6 +46,15 @@ export default function App() {
   const [binId, setBinId] = useState(1);
   const [weight, setWeight] = useState('');
   const [notif, setNotif] = useState('');
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraLoading, setCameraLoading] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const [detections, setDetections] = useState([]);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const detectorRef = useRef(null);
+  const scanTimerRef = useRef(null);
+  const scanningRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(bins));
@@ -39,8 +63,93 @@ export default function App() {
     }
   }, [bins]);
 
+  useEffect(() => () => {
+    scanningRef.current = false;
+    window.clearTimeout(scanTimerRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
   const totalPoints = useMemo(() => bins.reduce((s, b) => s + (b.total_points || 0), 0), [bins]);
   const totalWeight = useMemo(() => bins.reduce((s, b) => s + (b.current_weight || 0), 0), [bins]);
+
+  const stopCamera = () => {
+    scanningRef.current = false;
+    window.clearTimeout(scanTimerRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraActive(false);
+    setCameraLoading(false);
+    setDetections([]);
+  };
+
+  const startCamera = async () => {
+    setCameraError('');
+    setCameraLoading(true);
+    let failureMessage = 'Kamera tidak dapat diakses. Periksa izin kamera dan gunakan HTTPS atau localhost.';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' } },
+      });
+      streamRef.current = stream;
+      if (!videoRef.current) throw new Error('Elemen video kamera tidak tersedia.');
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+
+      if (!detectorRef.current) {
+        failureMessage = 'Model deteksi gagal dimuat. Pastikan server masih berjalan dan koneksi internet tersedia, lalu muat ulang halaman.';
+        await import('@tensorflow/tfjs');
+        const cocoSsdModule = await import('@tensorflow-models/coco-ssd');
+        const cocoSsd = cocoSsdModule.default ?? cocoSsdModule;
+        if (typeof cocoSsd.load !== 'function') {
+          throw new Error('Ekspor model COCO-SSD tidak tersedia.');
+        }
+        detectorRef.current = await cocoSsd.load();
+      }
+
+      setCameraActive(true);
+      setCameraLoading(false);
+      scanningRef.current = true;
+
+      const scan = async () => {
+        const video = videoRef.current;
+        if (!scanningRef.current || !video || video.readyState < 2) {
+          if (scanningRef.current) scanTimerRef.current = window.setTimeout(scan, 800);
+          return;
+        }
+
+        try {
+          const results = await detectorRef.current.detect(video);
+          if (!scanningRef.current) return;
+          const visibleDetections = results.filter((item) => item.score >= 0.5);
+          setDetections(visibleDetections);
+
+          const match = visibleDetections.find((item) => recyclableClasses[item.class]);
+          if (match) {
+            const suggestedBin = bins.find(
+              (bin) => bin.type.toLowerCase() === recyclableClasses[match.class].toLowerCase()
+            );
+            if (suggestedBin) setBinId(suggestedBin.id);
+          }
+        } catch (error) {
+          setCameraError(error instanceof Error ? error.message : 'Deteksi objek gagal.');
+          stopCamera();
+          return;
+        }
+
+        if (scanningRef.current) scanTimerRef.current = window.setTimeout(scan, 800);
+      };
+
+      scan();
+    } catch (error) {
+      stopCamera();
+      const details = error instanceof Error ? error.message : 'Terjadi kesalahan yang tidak diketahui.';
+      setCameraError(`${failureMessage} ${details}`);
+    } finally {
+      setCameraLoading(false);
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -107,15 +216,90 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Kiri: Simulasi */}
           <div className="lg:col-span-1 space-y-6">
+            <section className="glass-card rounded-2xl shadow-xl p-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-2">Computer Vision</h2>
+              <p className="text-sm text-gray-500 mb-4">
+                Arahkan kamera ke objek. AI akan menandai objek dan memilih kategori SmartBin yang cocok.
+              </p>
+
+              <div
+                className="relative w-full overflow-hidden rounded-xl bg-gray-900"
+                style={{
+                  aspectRatio: videoRef.current?.videoWidth
+                    ? `${videoRef.current.videoWidth} / ${videoRef.current.videoHeight}`
+                    : '16 / 9',
+                }}
+              >
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className={`h-full w-full object-cover ${cameraActive || cameraLoading ? '' : 'hidden'}`}
+                  aria-label="Pratinjau kamera"
+                />
+                {!cameraActive && !cameraLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-300">
+                    Kamera belum diaktifkan
+                  </div>
+                )}
+                {cameraActive && videoRef.current?.videoWidth > 0 && detections.map((item, index) => (
+                  <div
+                    key={`${item.class}-${index}`}
+                    className="absolute border-2 border-emerald-400"
+                    style={{
+                      left: `${(item.bbox[0] / videoRef.current.videoWidth) * 100}%`,
+                      top: `${(item.bbox[1] / videoRef.current.videoHeight) * 100}%`,
+                      width: `${(item.bbox[2] / videoRef.current.videoWidth) * 100}%`,
+                      height: `${(item.bbox[3] / videoRef.current.videoHeight) * 100}%`,
+                    }}
+                  >
+                    <span className="absolute -top-6 left-[-2px] whitespace-nowrap bg-emerald-500 px-1.5 py-0.5 text-xs text-white">
+                      {item.class} {Math.round(item.score * 100)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                {!cameraActive ? (
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    disabled={cameraLoading}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {cameraLoading ? 'Memuat kamera dan AI...' : 'Aktifkan kamera'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+                  >
+                    Matikan kamera
+                  </button>
+                )}
+                {cameraActive && (
+                  <span className="text-xs text-emerald-700">
+                    {detections.length ? `${detections.length} objek terdeteksi` : 'Mencari objek...'}
+                  </span>
+                )}
+              </div>
+
+              {cameraError && (
+                <p role="alert" className="mt-3 text-sm text-red-600">
+                  {cameraError}
+                </p>
+              )}
+              <p className="mt-3 text-xs leading-relaxed text-gray-500">
+                Model berjalan di browser. Pengenalan terbatas pada objek umum seperti botol, buku, dan buah;
+                kategori adalah perkiraan visual, bukan identifikasi material yang pasti.
+              </p>
+            </section>
+
             <div className="glass-card rounded-2xl shadow-xl p-6">
-              <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <span className="bg-blue-100 text-blue-600 p-1 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
-                  </svg>
-                </span>
-                Simulasi AI Sensor
-              </h2>
+              <h2 className="text-xl font-bold text-gray-800 mb-4">Simulasi AI Sensor</h2>
               <p className="text-sm text-gray-500 mb-6">
                 Masukkan data seolah-olah sensor AI mendeteksi sampah yang masuk.
               </p>

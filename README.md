@@ -4,6 +4,7 @@ Dashboard monitoring sampah pintar — hasil migrasi dari Laravel Blade ke **Rea
 agar bisa di-hosting statis di **Vercel**.
 
 Fitur sama persis dengan versi Laravel:
+- Computer vision melalui kamera browser dengan model COCO-SSD (deteksi objek berjalan lokal di browser)
 - Simulasi AI Sensor: pilih lokasi SmartBin + input berat sampah (gram)
 - Poin = berat sampah (1 gram = 1 poin)
 - Status kapasitas tiap tong + progress bar (hijau → kuning → merah, warning jika ≥90%)
@@ -19,6 +20,12 @@ npm run dev
 ```
 
 Buka http://localhost:5173
+
+## Computer vision
+
+Klik **Aktifkan kamera** dan izinkan akses kamera di browser. Model COCO-SSD diunduh saat pertama kali dipakai; deteksi berjalan di browser dan gambar kamera tidak dikirim ke server. Kamera hanya tersedia di `localhost` atau halaman HTTPS.
+
+Deteksi terbatas pada objek umum yang dikenali model (misalnya botol, buku, dan buah). Pemetaan ke kategori Organik/Plastik/Kertas adalah perkiraan, bukan identifikasi material yang pasti. Kamera juga tidak mengukur berat; berat sampah tetap perlu dimasukkan secara manual.
 
 ## Build
 
